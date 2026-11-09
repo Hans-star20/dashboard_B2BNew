@@ -1,0 +1,328 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum TicketStatus {
+  OPEN
+  CLOSED
+}
+
+enum ServiceCategory {
+  DATIN
+  HSI
+  WIFI
+  SQUAT
+  UNCLASSIFIED
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+}
+
+enum TechnicianIdentityKind {
+  SOURCE
+  APPLICATION
+  BOTH
+}
+
+enum IdentityConflictStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TechnicianLinkActionType {
+  MANUAL_LINK
+  CONFLICT_RESOLUTION
+  CORRECTION
+}
+
+model User {
+  id                          String                        @id @default(uuid()) @db.Char(36)
+  email                       String                        @unique(map: "uq_user_email") @db.VarChar(254)
+  roleId                      String                        @db.Char(36)
+  name                        String?                       @db.VarChar(191)
+  passwordHash                String                        @db.VarChar(255)
+  isActive                    Boolean                       @default(true)
+  primarySuperuserKey         String?                       @unique(map: "uq_user_primary_superuser") @db.VarChar(16)
+  createdByUserId             String?                       @db.Char(36)
+  createdAt                   DateTime                      @default(now()) @db.DateTime(3)
+  updatedAt                   DateTime                      @updatedAt @db.DateTime(3)
+  role                        Role                          @relation(fields: [roleId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  createdBy                   User?                         @relation("UserCreator", fields: [createdByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  createdUsers                User[]                        @relation("UserCreator")
+  sessions                    UserSession[]
+  permissions                 UserPermission[]              @relation("PermissionRecipient")
+  grantedPermissions          UserPermission[]              @relation("PermissionGrantor")
+  revokedPermissions          UserPermission[]              @relation("PermissionRevoker")
+  syncLogs                    SyncLog[]
+  recordedIdentityChanges     TechnicianIdentityHistory[]   @relation("IdentityRecorder")
+  closedIdentityChanges       TechnicianIdentityHistory[]   @relation("IdentityCloser")
+  reviewedIdentityConflicts   TechnicianIdentityConflict[]  @relation("IdentityConflictReviewer")
+  ticketTechnicianLinkActions TicketTechnicianLinkHistory[] @relation("TicketTechnicianLinkActor")
+
+  @@index([roleId, isActive], map: "idx_user_role_active")
+  @@index([createdByUserId], map: "idx_user_created_by")
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Char(36)
+  name        String           @unique(map: "uq_role_name") @db.VarChar(64)
+  description String?          @db.VarChar(255)
+  isSystem    Boolean          @default(true)
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid()) @db.Char(36)
+  code        String           @unique(map: "uq_permission_code") @db.VarChar(128)
+  description String?          @db.VarChar(255)
+  isSystem    Boolean          @default(true)
+  roles       RolePermission[]
+  users       UserPermission[] @relation("PermissionDefinition")
+
+  @@map("permissions")
+}
+
+model UserPermission {
+  id              String                   @id @default(uuid()) @db.Char(36)
+  userId          String                   @db.Char(36)
+  permissionId    String                   @db.Char(36)
+  activeGrantKey  Unsupported("char(36)")?
+  grantedByUserId String                   @db.Char(36)
+  grantedAt       DateTime                 @default(now()) @db.DateTime(3)
+  revokedAt       DateTime?                @db.DateTime(3)
+  revokedByUserId String?                  @db.Char(36)
+  user            User                     @relation("PermissionRecipient", fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  permission      Permission               @relation("PermissionDefinition", fields: [permissionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  grantedBy       User                     @relation("PermissionGrantor", fields: [grantedByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  revokedBy       User?                    @relation("PermissionRevoker", fields: [revokedByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([userId, activeGrantKey], map: "uq_user_permission_active_grant")
+  @@index([userId, permissionId, revokedAt], map: "idx_user_permission_history_lookup")
+  @@index([permissionId], map: "idx_user_permission_permission")
+  @@index([grantedByUserId], map: "idx_user_permission_grantor")
+  @@index([revokedByUserId], map: "idx_user_permission_revoker")
+  @@map("user_permissions")
+}
+
+model RolePermission {
+  roleId       String     @db.Char(36)
+  permissionId String     @db.Char(36)
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId], map: "idx_role_permission_permission")
+  @@map("role_permissions")
+}
+
+model TechnicianIdentityHistory {
+  id                  String                 @id @default(uuid()) @db.Char(36)
+  technicianId        String                 @db.Char(36)
+  nik                 String                 @db.VarChar(64)
+  activeNikKey        String?                @unique(map: "uq_active_technician_nik") @db.VarChar(64)
+  identityKind        TechnicianIdentityKind
+  validFrom           DateTime               @db.DateTime(3)
+  validTo             DateTime?              @db.DateTime(3)
+  recordedAt          DateTime               @default(now()) @db.DateTime(3)
+  recordedByUserId    String?                @db.Char(36)
+  recordedBySyncLogId String?                @db.Char(36)
+  closedAt            DateTime?              @db.DateTime(3)
+  closedByUserId      String?                @db.Char(36)
+  changeReason        String?                @db.VarChar(255)
+  technician          Technician             @relation(fields: [technicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  recordedBy          User?                  @relation("IdentityRecorder", fields: [recordedByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  closedBy            User?                  @relation("IdentityCloser", fields: [closedByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  recordedBySyncLog   SyncLog?               @relation("IdentitySyncRecorder", fields: [recordedBySyncLogId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([technicianId, validFrom], map: "idx_technician_identity_history")
+  @@index([recordedByUserId], map: "idx_identity_history_recorder")
+  @@index([recordedBySyncLogId], map: "idx_identity_history_sync_recorder")
+  @@index([closedByUserId], map: "idx_identity_history_closer")
+  @@map("technician_identity_history")
+}
+
+model TechnicianIdentityConflict {
+  id                    String                 @id @default(uuid()) @db.Char(36)
+  ticketIncident        String                 @db.VarChar(128)
+  suspectedTechnicianId String?                @db.Char(36)
+  resolvedTechnicianId  String?                @db.Char(36)
+  sourceNik             String                 @db.VarChar(64)
+  foundAt               DateTime               @default(now()) @db.DateTime(3)
+  status                IdentityConflictStatus @default(PENDING)
+  reviewedByUserId      String?                @db.Char(36)
+  reviewedAt            DateTime?              @db.DateTime(3)
+  decisionReason        String?                @db.VarChar(1000)
+  detectedBySyncLogId   String                 @db.Char(36)
+  ticket                Ticket                 @relation(fields: [ticketIncident], references: [incident], onDelete: Restrict, onUpdate: Restrict)
+  suspectedTechnician   Technician?            @relation("SuspectedIdentityConflicts", fields: [suspectedTechnicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  resolvedTechnician    Technician?            @relation("ResolvedIdentityConflict", fields: [resolvedTechnicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  reviewedBy            User?                  @relation("IdentityConflictReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  detectedBySyncLog     SyncLog                @relation(fields: [detectedBySyncLogId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([ticketIncident, detectedBySyncLogId], map: "uq_identity_conflict_detection")
+  @@index([status, foundAt], map: "idx_identity_conflict_status_found")
+  @@index([ticketIncident, sourceNik, status], map: "idx_identity_conflict_pending_group")
+  @@index([suspectedTechnicianId, status], map: "idx_identity_conflict_suspected")
+  @@index([resolvedTechnicianId, reviewedAt], map: "idx_identity_conflict_resolved")
+  @@index([sourceNik, foundAt], map: "idx_identity_conflict_source_nik")
+  @@index([reviewedByUserId, reviewedAt], map: "idx_identity_conflict_reviewer")
+  @@map("technician_identity_conflicts")
+}
+
+model TicketTechnicianLinkHistory {
+  id                   String                   @id @default(uuid()) @db.Char(36)
+  ticketIncident       String                   @db.VarChar(128)
+  previousTechnicianId String?                  @db.Char(36)
+  newTechnicianId      String                   @db.Char(36)
+  actionByUserId       String                   @db.Char(36)
+  actionType           TechnicianLinkActionType
+  reason               String                   @db.VarChar(1000)
+  createdAt            DateTime                 @default(now()) @db.DateTime(3)
+  ticket               Ticket                   @relation("TicketTechnicianLinkTicket", fields: [ticketIncident], references: [incident], onDelete: Restrict, onUpdate: Restrict)
+  previousTechnician   Technician?              @relation("TicketTechnicianPrevious", fields: [previousTechnicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  newTechnician        Technician               @relation("TicketTechnicianNew", fields: [newTechnicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  actionBy             User                     @relation("TicketTechnicianLinkActor", fields: [actionByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([ticketIncident, createdAt], map: "idx_ticket_technician_link_ticket_time")
+  @@index([previousTechnicianId], map: "idx_ticket_technician_link_previous")
+  @@index([newTechnicianId, createdAt], map: "idx_ticket_technician_link_new_time")
+  @@index([actionByUserId, createdAt], map: "idx_ticket_technician_link_actor_time")
+  @@map("ticket_technician_link_history")
+}
+
+model Technician {
+  id                            String                        @id @default(uuid()) @db.Char(36)
+  sourceNik                     String?                       @unique(map: "uq_technician_source_nik") @db.VarChar(64)
+  nik                           String?                       @unique(map: "uq_technician_nik") @db.VarChar(64)
+  name                          String?                       @db.VarChar(191)
+  sourceName                    String?                       @db.VarChar(191)
+  isActive                      Boolean                       @default(true)
+  nameNeedsReview               Boolean                       @default(false)
+  createdAt                     DateTime                      @default(now()) @db.DateTime(3)
+  updatedAt                     DateTime                      @updatedAt @db.DateTime(3)
+  tickets                       Ticket[]
+  identityHistory               TechnicianIdentityHistory[]
+  suspectedInIdentityConflicts  TechnicianIdentityConflict[]  @relation("SuspectedIdentityConflicts")
+  resolvedIdentityConflicts     TechnicianIdentityConflict[]  @relation("ResolvedIdentityConflict")
+  previousTicketTechnicianLinks TicketTechnicianLinkHistory[] @relation("TicketTechnicianPrevious")
+  newTicketTechnicianLinks      TicketTechnicianLinkHistory[] @relation("TicketTechnicianNew")
+
+  @@index([isActive, name], map: "idx_technician_active_name")
+  @@map("technicians")
+}
+
+model ServiceType {
+  id                  Int             @id @default(autoincrement()) @db.UnsignedSmallInt
+  sourceValue         String          @db.VarChar(100)
+  sourceValueMatchKey String          @unique(map: "uq_service_type_match_key") @db.VarChar(100)
+  dashboardCategory   ServiceCategory
+  isActive            Boolean         @default(true)
+  createdAt           DateTime        @default(now()) @db.DateTime(3)
+  updatedAt           DateTime        @updatedAt @db.DateTime(3)
+  tickets             Ticket[]        @relation("TicketServiceType")
+
+  @@index([isActive, dashboardCategory], map: "idx_service_type_active_category")
+  @@map("service_types")
+}
+
+model Ticket {
+  incident                 String                        @id @db.VarChar(128)
+  incidentMatchKey         String                        @unique(map: "uq_ticket_incident_match_key") @db.VarChar(128)
+  incidentSourceRaw        String                        @db.VarChar(128)
+  sourceStatus             String?                       @db.VarChar(191)
+  status                   TicketStatus
+  statusNeedsReview        Boolean                       @default(false)
+  sourceServiceType        String?                       @db.VarChar(100)
+  serviceTypeId            Int                           @db.UnsignedSmallInt
+  serviceTypeNeedsReview   Boolean                       @default(false)
+  technicianId             String?                       @db.Char(36)
+  technicianSourceNikRaw   String?                       @db.VarChar(64)
+  technicianNeedsReview    Boolean                       @default(false)
+  technicianSourceConflict Boolean                       @default(false)
+  reportedAt               DateTime                      @db.DateTime(3)
+  resolvedAt               DateTime?                     @db.DateTime(3)
+  lastSeenAt               DateTime?                     @db.DateTime(3)
+  createdAt                DateTime                      @default(now()) @db.DateTime(3)
+  updatedAt                DateTime                      @updatedAt @db.DateTime(3)
+  serviceType              ServiceType                   @relation("TicketServiceType", fields: [serviceTypeId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  technician               Technician?                   @relation(fields: [technicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  identityConflicts        TechnicianIdentityConflict[]
+  technicianLinkHistory    TicketTechnicianLinkHistory[] @relation("TicketTechnicianLinkTicket")
+
+  @@index([status, reportedAt], map: "idx_ticket_status_reported_at")
+  @@index([serviceTypeId, status], map: "idx_ticket_service_status")
+  @@index([technicianId, reportedAt], map: "idx_ticket_technician_reported_at")
+  @@index([technicianNeedsReview, reportedAt], map: "idx_ticket_technician_review")
+  @@index([technicianSourceConflict, reportedAt], map: "idx_ticket_technician_conflict")
+  @@index([resolvedAt], map: "idx_ticket_resolved_at")
+  @@index([lastSeenAt], map: "idx_ticket_last_seen_at")
+  @@map("tickets")
+}
+
+model SyncLog {
+  id                        String                       @id @default(uuid()) @db.Char(36)
+  runKey                    String                       @unique(map: "uq_sync_log_run_key") @db.Char(36)
+  status                    SyncStatus                   @default(RUNNING)
+  attemptCount              Int                          @default(1) @db.UnsignedInt
+  lastAttemptAt             DateTime                     @default(now()) @db.DateTime(3)
+  inserted                  Int                          @default(0) @db.UnsignedInt
+  updated                   Int                          @default(0) @db.UnsignedInt
+  unchanged                 Int                          @default(0) @db.UnsignedInt
+  skipped                   Int                          @default(0) @db.UnsignedInt
+  failed                    Int                          @default(0) @db.UnsignedInt
+  rowsRead                  Int?                         @db.UnsignedInt
+  failureDetails            Json?
+  startedAt                 DateTime                     @default(now()) @db.DateTime(3)
+  finishedAt                DateTime?                    @db.DateTime(3)
+  initiatedByUserId         String?                      @db.Char(36)
+  errorCode                 String?                      @db.VarChar(64)
+  errorSummary              String?                      @db.VarChar(1000)
+  initiatedBy               User?                        @relation(fields: [initiatedByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  recordedIdentityChanges   TechnicianIdentityHistory[]  @relation("IdentitySyncRecorder")
+  detectedIdentityConflicts TechnicianIdentityConflict[]
+
+  @@index([status, startedAt], map: "idx_sync_log_status_started_at")
+  @@index([startedAt], map: "idx_sync_log_started_at")
+  @@index([initiatedByUserId], map: "idx_sync_log_initiated_by")
+  @@map("sync_logs")
+}
+
+model UserSession {
+  id        String    @id @default(uuid()) @db.Char(36)
+  tokenHash String    @unique(map: "uq_user_session_token_hash") @db.Char(64)
+  userId    String    @db.Char(36)
+  expiresAt DateTime  @db.DateTime(3)
+  createdAt DateTime  @default(now()) @db.DateTime(3)
+  revokedAt DateTime? @db.DateTime(3)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([userId, revokedAt], map: "idx_user_session_user_revoked")
+  @@index([expiresAt], map: "idx_user_session_expires_at")
+  @@map("user_sessions")
+}
+
+model LoginThrottle {
+  id              String    @id @default(uuid()) @db.Char(36)
+  attemptKey      String    @unique(map: "uq_login_throttle_attempt_key") @db.Char(64)
+  attempts        Int       @default(0) @db.UnsignedInt
+  windowStartedAt DateTime  @default(now()) @db.DateTime(3)
+  lockedUntil     DateTime? @db.DateTime(3)
+  updatedAt       DateTime  @updatedAt @db.DateTime(3)
+
+  @@index([lockedUntil], map: "idx_login_throttle_locked_until")
+  @@map("login_throttles")
+}
